@@ -463,49 +463,63 @@ def _tensor_matrix_multiply(
     """
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
-    # Batch dimension - fixed
+
+    # Get batch index from block z dimension
     batch = cuda.blockIdx.z
 
+    # Shared memory arrays for block multiplication
     BLOCK_DIM = 32
     a_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
     b_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
 
-    # The final position c[i, j]
-    i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
-    j = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    # Thread indices within the block
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
 
-    # The local position in the block.
-    pi = cuda.threadIdx.x
-    pj = cuda.threadIdx.y
+    # Global indices for final output position
+    i = cuda.blockIdx.x * BLOCK_DIM + tx
+    j = cuda.blockIdx.y * BLOCK_DIM + ty
 
-    # Code Plan:
-    # 1) Move across shared dimension by block dim.
-    #    a) Copy into shared memory for a matrix.
-    #    b) Copy into shared memory for b matrix
-    #    c) Compute the dot produce for position c[i, j]
-    # TODO: Implement for Task 3.4.
+    # Initialize accumulator
     accum = 0.0
-    for idx in range(0, a_shape[2], BLOCK_DIM):
-        # We get the absolute value of the index with respect to all of the blocks
-        k = idx + pj
-        # i and k must be within the shape. a has shape [batch, i, k]
-        if i < a_shape[1] and k < a_shape[2]:
-            # We get the absolute value in a_storage by multiplying the batch dimension and indices with the strides
-            a_shared[pi, pj] = a_storage[a_batch_stride * batch + a_strides[1] * i + a_strides[2] * k]
-        k = idx + pi
-        # j and k must be within the shape. b has shape [batch, k, j]
-        if j < b_shape[2] and k < b_shape[1]:
-            # Getting absolute value in b_storage by multiplying the batch dimension and indices with the strides
-            b_shared[pi, pj] = b_storage[b_batch_stride * batch + b_strides[2] * j + b_strides[1] * k]
-        # After writing to shared arrays we need to sync the threads
+
+    # Loop over blocks in the shared K dimension
+    for k_start in range(0, a_shape[2], BLOCK_DIM):
+        # Clear shared memory
+        a_shared[tx, ty] = 0.0
+        b_shared[tx, ty] = 0.0
         cuda.syncthreads()
-        for k in range(BLOCK_DIM):
-            if( idx + k ) < a_shape[2]:
-                accum += a_shared[pi, k] * b_shared[k, pj]
-    # We need to make sure i and j are within shape. out has shape [batch, i , j]
+
+        # Load data into shared memory
+        # k_pos is the current position in the k dimension
+        k_pos = k_start + ty
+
+        # Load a block from matrix A
+        if i < a_shape[1] and k_pos < a_shape[2]:
+            a_idx = batch * a_batch_stride + i * a_strides[1] + k_pos * a_strides[2]
+            a_shared[tx, ty] = a_storage[a_idx]
+
+        # Load a block from matrix B
+        k_pos = k_start + tx
+        if k_pos < b_shape[1] and j < b_shape[2]:
+            b_idx = batch * b_batch_stride + k_pos * b_strides[1] + j * b_strides[2]
+            b_shared[tx, ty] = b_storage[b_idx]
+
+        # Ensure all threads have loaded their data
+        cuda.syncthreads()
+
+        # Compute partial dot product for this block
+        k_end = min(BLOCK_DIM, a_shape[2] - k_start)
+        for k in range(k_end):
+            if k_start + k < a_shape[2]:
+                accum += a_shared[tx, k] * b_shared[k, ty]
+
+        # Ensure all threads are done with shared memory
+        cuda.syncthreads()
+
+    # Write final result to global memory
     if i < out_shape[1] and j < out_shape[2]:
-        # We find the absolute position in out storage by multiplying the strides with the batch dimension and the indices and set it to accum
-        out[out_strides[0] * batch + out_strides[1] * i + out_strides[2] * j] = accum
+        out_idx = batch * out_strides[0] + i * out_strides[1] + j * out_strides[2]
+        out[out_idx] = accum
 
-
-tensor_matrix_multiply = cuda.jit(_tensor_matrix_multiply)
+tensor_matrix_multiply = cuda.jit()(_tensor_matrix_multiply)
