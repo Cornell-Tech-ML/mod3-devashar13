@@ -105,37 +105,41 @@ class CudaOps(TensorOps):
         return ret
 
     @staticmethod
+    @staticmethod
     def matrix_multiply(a: Tensor, b: Tensor) -> Tensor:
-        # Ensure tensors are at least 3D
+        # Make these always be a 3 dimensional multiply
+        both_2d = 0
         if len(a.shape) == 2:
-            a = a.view(1, *a.shape)
+            a = a.contiguous().view(1, a.shape[0], a.shape[1])
+            both_2d += 1
         if len(b.shape) == 2:
-            b = b.view(1, *b.shape)
+            b = b.contiguous().view(1, b.shape[0], b.shape[1])
+            both_2d += 1
+        both_2d = both_2d == 2
 
-        batch_size = max(a.shape[0], b.shape[0])
-        M, K = a.shape[-2], a.shape[-1]
-        N = b.shape[-1]
+        ls = list(shape_broadcast(a.shape[:-2], b.shape[:-2]))
+        ls.append(a.shape[-2])
+        ls.append(b.shape[-1])
+        assert a.shape[-1] == b.shape[-2]
+        out = a.zeros(tuple(ls))
 
-        out_shape = (batch_size, M, N) if batch_size > 1 else (M, N)
-        out = a.zeros(out_shape)
+        # One block per batch, extra rows, extra col
+        blockspergrid = (
+            (out.shape[1] + (THREADS_PER_BLOCK - 1)) // THREADS_PER_BLOCK,
+            (out.shape[2] + (THREADS_PER_BLOCK - 1)) // THREADS_PER_BLOCK,
+            out.shape[0],
+        )
+        threadsperblock = (THREADS_PER_BLOCK, THREADS_PER_BLOCK, 1)
 
-        BLOCK_DIM = 32
-        grid_x = (N + BLOCK_DIM - 1) // BLOCK_DIM
-        grid_y = (M + BLOCK_DIM - 1) // BLOCK_DIM
-        grid_z = batch_size if batch_size > 1 else 1
-
-        grid_dims = (grid_x, grid_y, grid_z)
-        block_dims = (BLOCK_DIM, BLOCK_DIM, 1)
-
-        tensor_matrix_multiply[grid_dims, block_dims](
+        tensor_matrix_multiply[blockspergrid, threadsperblock](
             *out.tuple(), out.size, *a.tuple(), *b.tuple()
         )
 
-        # If original tensors were 2D, return a 2D tensor
-        if len(out_shape) == 3 and out_shape[0] == 1:
-            out = out.view(out_shape[1], out_shape[2])
-
+        # Undo 3d if we added it.
+        if both_2d:
+            out = out.view(out.shape[1], out.shape[2])
         return out
+
 # Implement
 
 
@@ -235,7 +239,8 @@ def tensor_zip(
 
 
 def _sum_practice(out: Storage, a: Storage, size: int) -> None:
-    """This is a practice sum kernel to prepare for reduce.
+    """
+    This is a practice sum kernel to prepare for reduce.
 
     Given an array of length $n$ and out of size $n // \text{blockDIM}$
     it should sum up each blockDim values into an out cell.
@@ -249,7 +254,6 @@ def _sum_practice(out: Storage, a: Storage, size: int) -> None:
     Note: Each block must do the sum using shared memory!
 
     Args:
-    ----
         out (Storage): storage for `out` tensor.
         a (Storage): storage for `a` tensor.
         size (int):  length of a.
@@ -260,20 +264,21 @@ def _sum_practice(out: Storage, a: Storage, size: int) -> None:
     cache = cuda.shared.array(BLOCK_DIM, numba.float64)
     i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     pos = cuda.threadIdx.x
+
+    # TODO: Implement for Task 3.3.
     if i < size:
-        cache[pos] = a[i]
+        value = float(a[i])
+        cache[pos] = value
+        cuda.syncthreads()
     else:
         cache[pos] = 0.0
-    cuda.syncthreads()
-    stride = 1
-    while stride < BLOCK_DIM:
-        if pos % (2 * stride) == 0:
-            cache[pos] += cache[pos + stride]
-        stride *= 2
-        cuda.syncthreads()
-    if pos == 0:
-        out[cuda.blockIdx.x] = cache[0]
-    # raise NotImplementedError("Need to implement for Task 3.3")
+    if i < size:
+        for j in [1, 2, 4, 8, 16]:
+            if pos % (j * 2) == 0:
+                cache[pos] += cache[pos + j]
+                cuda.syncthreads()
+        if pos == 0:
+            out[cuda.blockIdx.x] = cache[0]
 
 
 jit_sum_practice = cuda.jit()(_sum_practice)
@@ -360,7 +365,8 @@ def tensor_reduce(
 
 
 def _mm_practice(out: Storage, a: Storage, b: Storage, size: int) -> None:
-    """This is a practice square MM kernel to prepare for matmul.
+    """
+    This is a practice square MM kernel to prepare for matmul.
 
     Given a storage `out` and two storage `a` and `b`. Where we know
     both are shape [size, size] with strides [size, 1].
@@ -383,12 +389,10 @@ def _mm_practice(out: Storage, a: Storage, b: Storage, size: int) -> None:
     ```
 
     Args:
-    ----
         out (Storage): storage for `out` tensor.
         a (Storage): storage for `a` tensor.
         b (Storage): storage for `b` tensor.
         size (int): size of the square
-
     """
     BLOCK_DIM = 32
     # TODO: Implement for Task 3.3.
@@ -440,7 +444,8 @@ def _tensor_matrix_multiply(
     b_shape: Shape,
     b_strides: Strides,
 ) -> None:
-    """CUDA tensor matrix multiply function.
+    """
+    CUDA tensor matrix multiply function.
 
     Requirements:
 
@@ -456,7 +461,6 @@ def _tensor_matrix_multiply(
     Returns:
         None : Fills in `out`
     """
-
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
     # Batch dimension - fixed
@@ -504,4 +508,4 @@ def _tensor_matrix_multiply(
         out[out_strides[0] * batch + out_strides[1] * i + out_strides[2] * j] = accum
 
 
-tensor_matrix_multiply = jit(_tensor_matrix_multiply)
+tensor_matrix_multiply = cuda.jit(_tensor_matrix_multiply)
