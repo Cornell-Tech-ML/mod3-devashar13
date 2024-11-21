@@ -105,37 +105,37 @@ class CudaOps(TensorOps):
         return ret
 
     @staticmethod
-def matrix_multiply(a: Tensor, b: Tensor) -> Tensor:
-    # Ensure tensors are at least 3D
-    if len(a.shape) == 2:
-        a = a.view(1, *a.shape)
-    if len(b.shape) == 2:
-        b = b.view(1, *b.shape)
+    def matrix_multiply(a: Tensor, b: Tensor) -> Tensor:
+        # Ensure tensors are at least 3D
+        if len(a.shape) == 2:
+            a = a.view(1, *a.shape)
+        if len(b.shape) == 2:
+            b = b.view(1, *b.shape)
 
-    batch_size = max(a.shape[0], b.shape[0])
-    M, K = a.shape[-2], a.shape[-1]
-    N = b.shape[-1]
+        batch_size = max(a.shape[0], b.shape[0])
+        M, K = a.shape[-2], a.shape[-1]
+        N = b.shape[-1]
 
-    out_shape = (batch_size, M, N) if batch_size > 1 else (M, N)
-    out = a.zeros(out_shape)
+        out_shape = (batch_size, M, N) if batch_size > 1 else (M, N)
+        out = a.zeros(out_shape)
 
-    BLOCK_DIM = 32
-    grid_x = (N + BLOCK_DIM - 1) // BLOCK_DIM
-    grid_y = (M + BLOCK_DIM - 1) // BLOCK_DIM
-    grid_z = batch_size if batch_size > 1 else 1
+        BLOCK_DIM = 32
+        grid_x = (N + BLOCK_DIM - 1) // BLOCK_DIM
+        grid_y = (M + BLOCK_DIM - 1) // BLOCK_DIM
+        grid_z = batch_size if batch_size > 1 else 1
 
-    grid_dims = (grid_x, grid_y, grid_z)
-    block_dims = (BLOCK_DIM, BLOCK_DIM, 1)
+        grid_dims = (grid_x, grid_y, grid_z)
+        block_dims = (BLOCK_DIM, BLOCK_DIM, 1)
 
-    tensor_matrix_multiply[grid_dims, block_dims](
-        *out.tuple(), out.size, *a.tuple(), *b.tuple()
-    )
+        tensor_matrix_multiply[grid_dims, block_dims](
+            *out.tuple(), out.size, *a.tuple(), *b.tuple()
+        )
 
-    # If original tensors were 2D, return a 2D tensor
-    if len(out_shape) == 3 and out_shape[0] == 1:
-        out = out.view(out_shape[1], out_shape[2])
+        # If original tensors were 2D, return a 2D tensor
+        if len(out_shape) == 3 and out_shape[0] == 1:
+            out = out.view(out_shape[1], out_shape[2])
 
-    return out
+        return out
 # Implement
 
 
