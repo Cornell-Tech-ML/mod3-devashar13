@@ -461,65 +461,64 @@ def _tensor_matrix_multiply(
     Returns:
         None : Fills in `out`
     """
-    a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
-    b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
-
-    # Get batch index from block z dimension
-    batch = cuda.blockIdx.z
-
-    # Shared memory arrays for block multiplication
     BLOCK_DIM = 32
-    a_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
-    b_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
 
-    # Thread indices within the block
+    # Thread indices
     tx = cuda.threadIdx.x
     ty = cuda.threadIdx.y
 
-    # Global indices for final output position
-    i = cuda.blockIdx.x * BLOCK_DIM + tx
-    j = cuda.blockIdx.y * BLOCK_DIM + ty
+    # Block indices
+    i = cuda.blockIdx.x * BLOCK_DIM + tx  # row
+    j = cuda.blockIdx.y * BLOCK_DIM + ty  # col
+    batch = cuda.blockIdx.z               # batch
 
-    # Initialize accumulator
-    accum = 0.0
+    # Shared memory for the block
+    a_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
+    b_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
 
-    # Loop over blocks in the shared K dimension
-    for k_start in range(0, a_shape[2], BLOCK_DIM):
-        # Clear shared memory
-        a_shared[tx, ty] = 0.0
-        b_shared[tx, ty] = 0.0
-        cuda.syncthreads()
-
-        # Load data into shared memory
-        # k_pos is the current position in the k dimension
-        k_pos = k_start + ty
-
-        # Load a block from matrix A
-        if i < a_shape[1] and k_pos < a_shape[2]:
-            a_idx = batch * a_batch_stride + i * a_strides[1] + k_pos * a_strides[2]
-            a_shared[tx, ty] = a_storage[a_idx]
-
-        # Load a block from matrix B
-        k_pos = k_start + tx
-        if k_pos < b_shape[1] and j < b_shape[2]:
-            b_idx = batch * b_batch_stride + k_pos * b_strides[1] + j * b_strides[2]
-            b_shared[tx, ty] = b_storage[b_idx]
-
-        # Ensure all threads have loaded their data
-        cuda.syncthreads()
-
-        # Compute partial dot product for this block
-        k_end = min(BLOCK_DIM, a_shape[2] - k_start)
-        for k in range(k_end):
-            if k_start + k < a_shape[2]:
-                accum += a_shared[tx, k] * b_shared[k, ty]
-
-        # Ensure all threads are done with shared memory
-        cuda.syncthreads()
-
-    # Write final result to global memory
+    # Check if this thread should compute
     if i < out_shape[1] and j < out_shape[2]:
-        out_idx = batch * out_strides[0] + i * out_strides[1] + j * out_strides[2]
-        out[out_idx] = accum
+        accumulator = 0.0
+        # Handle broadcasting for batch dimension
+        b_batch = 0 if b_shape[0] == 1 else batch
+
+        # Loop over the reduction dimension in blocks
+        for k_start in range(0, a_shape[2], BLOCK_DIM):
+            # Initialize shared memory
+            a_shared[tx, ty] = 0.0
+            b_shared[tx, ty] = 0.0
+            cuda.syncthreads()
+
+            k = k_start + ty
+            # Load a block from matrix A
+            if k < a_shape[2]:
+                a_pos = (batch * a_strides[0] +
+                        i * a_strides[1] +
+                        k * a_strides[2])
+                if i < a_shape[1]:
+                    a_shared[tx, ty] = a_storage[a_pos]
+
+            k = k_start + tx
+            # Load a block from matrix B with broadcasting
+            if k < b_shape[1]:
+                b_pos = (b_batch * b_strides[0] +
+                        k * b_strides[1] +
+                        j * b_strides[2])
+                if j < b_shape[2]:
+                    b_shared[tx, ty] = b_storage[b_pos]
+
+            cuda.syncthreads()
+
+            # Compute partial product
+            for k in range(min(BLOCK_DIM, a_shape[2] - k_start)):
+                accumulator += a_shared[tx, k] * b_shared[k, ty]
+
+            cuda.syncthreads()
+
+        # Write result to global memory
+        out_pos = (batch * out_strides[0] +
+                  i * out_strides[1] +
+                  j * out_strides[2])
+        out[out_pos] = accumulator
 
 tensor_matrix_multiply = cuda.jit()(_tensor_matrix_multiply)
