@@ -635,6 +635,7 @@ class Permute(Function):
             grad_output (Tensor): The gradient output from the next layer.
 
         Returns:
+        -------
         -------ty
             Tuple[Tensor, float]: The gradient with respect to the input tensor.
 

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar, Any
-from . import operators
 import numpy as np
 from numba import prange
 from numba import njit as _njit
-
-
 
 
 from .tensor_data import (
@@ -22,7 +19,7 @@ if TYPE_CHECKING:
     from typing import Callable, Optional
 
     from .tensor import Tensor
-    from .tensor_data import Index, Shape, Storage, Strides
+    from .tensor_data import Shape, Storage, Strides
 
 # TIP: Use `NUMBA_DISABLE_JIT=1 pytest tests/ -m task3_1` to run these tests without JIT.
 
@@ -33,6 +30,18 @@ Fn = TypeVar("Fn")
 
 
 def njit(fn: Fn, **kwargs: Any) -> Fn:
+    """Compiles a Python function for CPU execution using Numba's JIT compiler with optimization.
+
+    Args:
+    ----
+        fn (Fn): The function to compile.
+        **kwargs (Any): Additional keyword arguments for the JIT compiler.
+
+    Returns:
+    -------
+        Fn: The compiled CPU function.
+
+    """
     return _njit(inline="always", **kwargs)(fn)  # type: ignore
 
 
@@ -91,28 +100,16 @@ class FastOps(TensorOps):
 
     @staticmethod
     def matrix_multiply(a: Tensor, b: Tensor) -> Tensor:
-        """Batched tensor matrix multiply ::
-
-            for n:
-              for i:
-                for j:
-                  for k:
-                    out[n, i, j] += a[n, i, k] * b[n, k, j]
-
-        Where n indicates an optional broadcasted batched dimension.
-
-        Should work for tensor shapes of 3 dims ::
-
-            assert a.shape[-1] == b.shape[-2]
+        """Performs a CUDA-accelerated batched matrix multiplication between tensors `a` and `b`.
 
         Args:
         ----
-            a : tensor data a
-            b : tensor data b
+            a (Tensor): The first input tensor.
+            b (Tensor): The second input tensor.
 
         Returns:
         -------
-            New tensor data
+            Tensor: The result of the matrix multiplication.
 
         """
         # Make these always be a 3 dimensional multiply
@@ -189,6 +186,7 @@ def tensor_map(
 
     return njit(_map, parallel=True)  # Ensure thread safety with local buffers
 
+
 def tensor_zip(
     fn: Callable[[float, float], float],
 ) -> Callable[
@@ -241,6 +239,7 @@ def tensor_zip(
             out[out_pos] = fn(a_storage[a_idx], b_storage[b_idx])
 
     return njit(_zip, parallel=True)  # Thread-safe implementation
+
 
 def tensor_reduce(
     fn: Callable[[float, float], float],
@@ -305,9 +304,6 @@ def tensor_reduce(
     return njit(_reduce, parallel=True)
 
 
-
-
-
 def _tensor_matrix_multiply(
     out: Storage,
     out_shape: Shape,
@@ -364,22 +360,17 @@ def _tensor_matrix_multiply(
                 result = 0.0
                 for p in range(k):
                     a_index = (
-                        batch * a_batch_stride
-                        + i * a_strides[1]
-                        + p * a_strides[2]
+                        batch * a_batch_stride + i * a_strides[1] + p * a_strides[2]
                     )
                     b_index = (
-                        batch * b_batch_stride
-                        + p * b_strides[1]
-                        + j * b_strides[2]
+                        batch * b_batch_stride + p * b_strides[1] + j * b_strides[2]
                     )
                     result += a_storage[a_index] * b_storage[b_index]
                 out_index = (
-                    batch * out_strides[0]
-                    + i * out_strides[1]
-                    + j * out_strides[2]
+                    batch * out_strides[0] + i * out_strides[1] + j * out_strides[2]
                 )
                 out[out_index] = result
+
 
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)
 assert tensor_matrix_multiply is not None
