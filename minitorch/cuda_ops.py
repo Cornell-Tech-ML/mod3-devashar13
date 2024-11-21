@@ -445,11 +445,7 @@ def _tensor_matrix_multiply(
     b_strides: Strides,
 ) -> None:
     """
-    CUDA tensor matrix multiply function.
-    Requirements:
-    * All data must be first moved to shared memory.
-    * Only read each cell in `a` and `b` once.
-    * Only write to global memory once per kernel.
+    CUDA tensor matrix multiply function with corrected indexing and accumulation.
     """
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
@@ -474,14 +470,14 @@ def _tensor_matrix_multiply(
 
     # Loop over blocks in the shared dimension
     for block in range((a_shape[-1] + BLOCK_DIM - 1) // BLOCK_DIM):
+        # Global indices for this block
+        a_col = block * BLOCK_DIM + pj
+        b_row = block * BLOCK_DIM + pi
+
         # Clear shared memory
         a_shared[pi, pj] = 0.0
         b_shared[pi, pj] = 0.0
         cuda.syncthreads()
-
-        # Global indices for this block
-        a_col = block * BLOCK_DIM + pj
-        b_row = block * BLOCK_DIM + pi
 
         # Load data into shared memory if within bounds
         if i < a_shape[-2] and a_col < a_shape[-1]:
@@ -503,8 +499,9 @@ def _tensor_matrix_multiply(
         cuda.syncthreads()
 
         # Compute partial dot product for this block
-        for k in range(min(BLOCK_DIM, a_shape[-1] - block * BLOCK_DIM)):
-            acc += a_shared[pi, k] * b_shared[k, pj]
+        if i < out_shape[-2] and j < out_shape[-1]:
+            for k in range(min(BLOCK_DIM, a_shape[-1] - block * BLOCK_DIM)):
+                acc += a_shared[pi, k] * b_shared[k, pj]
 
         cuda.syncthreads()
 
