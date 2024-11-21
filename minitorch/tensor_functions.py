@@ -620,7 +620,7 @@ class Permute(Function):
             Tensor: The permuted tensor.
 
         """
-        perm_order = list(order.to_numpy().astype(int))
+        perm_order = tuple(int(order[i]) for i in range(order.size))
         ctx.save_for_backward(perm_order)
         permuted_data = t1._tensor.permute(*perm_order)
         return t1._new(permuted_data)
@@ -635,7 +635,7 @@ class Permute(Function):
             grad_output (Tensor): The gradient output from the next layer.
 
         Returns:
-        -------
+        -------ty
             Tuple[Tensor, float]: The gradient with respect to the input tensor.
 
         """
