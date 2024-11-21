@@ -269,8 +269,15 @@ def _sum_practice(out: Storage, a: Storage, size: int) -> None:
     else:
         cache[pos] = 0.0
     cuda.syncthreads()
-    # TODO: Implement for Task 3.3.
-    raise NotImplementedError("Need to implement for Task 3.3")
+    stride = 1
+    while stride < BLOCK_DIM:
+        if pos % (2 * stride) == 0:
+            cache[pos] += cache[pos + stride]
+        stride *= 2
+        cuda.syncthreads()
+    if pos == 0:
+        out[cuda.blockIdx.x] = cache[0]
+    # raise NotImplementedError("Need to implement for Task 3.3")
 
 
 jit_sum_practice = cuda.jit()(_sum_practice)
@@ -320,8 +327,38 @@ def tensor_reduce(
         out_pos = cuda.blockIdx.x
         pos = cuda.threadIdx.x
 
+        if out_pos < out_size:
+            # Get multi-dimensional index for output position.
+            to_index(out_pos, out_shape, out_index)
+
+            # Initialize shared memory for reduction.
+            cache[pos] = reduce_value
+
+            # Iterate over the reduction dimension.
+            reduce_index = cuda.local.array(MAX_DIMS, numba.int32)
+            for i in range(MAX_DIMS):
+                reduce_index[i] = out_index[i]
+
+            if pos < a_shape[reduce_dim]:
+                reduce_index[reduce_dim] = pos
+                a_pos = index_to_position(reduce_index, a_strides)
+                cache[pos] = a_storage[a_pos]
+            cuda.syncthreads()
+
+            # Perform reduction in shared memory.
+            stride = 1
+            while stride < BLOCK_DIM:
+                if pos % (2 * stride) == 0 and pos + stride < BLOCK_DIM:
+                    cache[pos] += cache[pos + stride]  # Modify here for other operations like max.
+                stride *= 2
+                cuda.syncthreads()
+
+            # Write the final result to the output tensor.
+            if pos == 0:
+                out[out_pos] = cache[0]
+
         # TODO: Implement for Task 3.3.
-        raise NotImplementedError("Need to implement for Task 3.3")
+        # raise NotImplementedError("Need to implement for Task 3.3")
 
     return jit(_reduce)  # type: ignore
 
