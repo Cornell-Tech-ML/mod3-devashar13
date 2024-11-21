@@ -430,7 +430,6 @@ def mm_practice(a: Tensor, b: Tensor) -> TensorData:
         out.tuple()[0], a._tensor._storage, b._tensor._storage, size
     )
     return out
-
 def _tensor_matrix_multiply(
     out: Storage,
     out_shape: Shape,
@@ -453,15 +452,15 @@ def _tensor_matrix_multiply(
     batch = cuda.blockIdx.z
 
     BLOCK_DIM = 32
-    a_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
-    b_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
+    a_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float32)
+    b_shared = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float32)
 
     # The final position c[i, j]
     i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     j = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
 
     # Initialize accumulator for dot product
-    acc = 0.0
+    acc = numba.float32(0.0)
 
     # Loop over blocks in the shared dimension
     for block in range((a_shape[-1] + BLOCK_DIM - 1) // BLOCK_DIM):
@@ -515,5 +514,6 @@ def _tensor_matrix_multiply(
             j * out_strides[-1]
         )
         out[out_idx] = acc
+
 
 tensor_matrix_multiply = cuda.jit(_tensor_matrix_multiply)
